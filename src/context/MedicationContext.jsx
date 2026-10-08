@@ -6,6 +6,7 @@ import {
   SAFETY_CHECK_DATA,
   SAMPLE_PRESCRIPTIONS,
 } from '../data/demoData';
+import { evaluateSafetyForMedicines, generateScheduleFromMedicines } from '../utils/safetyChecker';
 
 const MedicationContext = createContext(null);
 
@@ -14,6 +15,7 @@ const STORAGE_KEYS = {
   MEDICINES: 'pillcheck_medicines_v1',
   SCHEDULE: 'pillcheck_schedule_v1',
   UPLOADED_RX: 'pillcheck_rx_v1',
+  EXTRACTED: 'pillcheck_extracted_v1',
 };
 
 export function MedicationProvider({ children }) {
@@ -27,7 +29,7 @@ export function MedicationProvider({ children }) {
     }
   });
 
-  // 2. Medicines state
+  // 2. Medicines state (Confirmed active medications)
   const [medicines, setMedicines] = useState(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEYS.MEDICINES);
@@ -37,7 +39,17 @@ export function MedicationProvider({ children }) {
     }
   });
 
-  // 3. Schedule state
+  // 3. Extracted medicines state (Candidate medicines from current scan before/after confirmation)
+  const [extractedMedicines, setExtractedMedicines] = useState(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.EXTRACTED);
+      return saved ? JSON.parse(saved) : INITIAL_MEDICINES;
+    } catch {
+      return INITIAL_MEDICINES;
+    }
+  });
+
+  // 4. Schedule state
   const [schedule, setSchedule] = useState(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEYS.SCHEDULE);
@@ -47,17 +59,34 @@ export function MedicationProvider({ children }) {
     }
   });
 
-  // 4. Uploaded prescription image state
+  // 5. Uploaded prescription image metadata
   const [uploadedRx, setUploadedRx] = useState(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEYS.UPLOADED_RX);
-      return saved ? JSON.parse(saved) : SAMPLE_PRESCRIPTIONS[0];
+      return saved
+        ? JSON.parse(saved)
+        : {
+            ...SAMPLE_PRESCRIPTIONS[0],
+            confidence: 96,
+            mode: 'Preset Sample',
+            statusMessage: 'Preset Demo Prescription (Pre-verified)',
+            isPreset: true,
+          };
     } catch {
-      return SAMPLE_PRESCRIPTIONS[0];
+      return {
+        ...SAMPLE_PRESCRIPTIONS[0],
+        confidence: 96,
+        mode: 'Preset Sample',
+        statusMessage: 'Preset Demo Prescription (Pre-verified)',
+        isPreset: true,
+      };
     }
   });
 
-  // 5. Active reminder popup modal state
+  // 6. Dynamic Safety check data based on active medicines
+  const [safetyData, setSafetyData] = useState(() => evaluateSafetyForMedicines(INITIAL_MEDICINES));
+
+  // 7. Active reminder popup modal state
   const [reminderModalOpen, setReminderModalOpen] = useState(false);
   const [activeReminderDoseId, setActiveReminderDoseId] = useState('dose-2');
 
@@ -68,7 +97,12 @@ export function MedicationProvider({ children }) {
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.MEDICINES, JSON.stringify(medicines));
+    setSafetyData(evaluateSafetyForMedicines(medicines));
   }, [medicines]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.EXTRACTED, JSON.stringify(extractedMedicines));
+  }, [extractedMedicines]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.SCHEDULE, JSON.stringify(schedule));
@@ -89,7 +123,9 @@ export function MedicationProvider({ children }) {
     setMedicines((prev) =>
       prev.map((med) => (med.id === id ? { ...med, ...updatedFields } : med))
     );
-    // Also sync medicine name/strength into schedule if updated
+    setExtractedMedicines((prev) =>
+      prev.map((med) => (med.id === id ? { ...med, ...updatedFields } : med))
+    );
     setSchedule((prev) =>
       prev.map((dose) => {
         if (dose.medicineId === id) {
@@ -103,6 +139,34 @@ export function MedicationProvider({ children }) {
         return dose;
       })
     );
+  };
+
+  const updateExtractedMedicine = (id, updatedFields) => {
+    setExtractedMedicines((prev) =>
+      prev.map((med) => (med.id === id ? { ...med, ...updatedFields } : med))
+    );
+  };
+
+  const addExtractedMedicine = (newMed) => {
+    setExtractedMedicines((prev) => [...prev, newMed]);
+  };
+
+  const removeExtractedMedicine = (id) => {
+    setExtractedMedicines((prev) => prev.filter((m) => m.id !== id));
+  };
+
+  // Called on Extracted screen when user clicks "Confirm Medicines"
+  const confirmExtractedMedicines = (confirmedList) => {
+    const listToUse = confirmedList || extractedMedicines;
+    setMedicines(listToUse);
+
+    // Regenerate schedule dynamically matching confirmed medications
+    const newSchedule = generateScheduleFromMedicines(listToUse);
+    setSchedule(newSchedule);
+
+    // Evaluate dynamic safety
+    const newSafety = evaluateSafetyForMedicines(listToUse);
+    setSafetyData(newSafety);
   };
 
   const markDoseStatus = (doseId, status) => {
@@ -151,16 +215,26 @@ export function MedicationProvider({ children }) {
   const resetAllData = () => {
     setUser(INITIAL_USER);
     setMedicines(INITIAL_MEDICINES);
+    setExtractedMedicines(INITIAL_MEDICINES);
     setSchedule(INITIAL_SCHEDULE);
-    setUploadedRx(SAMPLE_PRESCRIPTIONS[0]);
+    const defaultRx = {
+      ...SAMPLE_PRESCRIPTIONS[0],
+      confidence: 96,
+      mode: 'Preset Sample',
+      statusMessage: 'Preset Demo Prescription (Pre-verified)',
+      isPreset: true,
+    };
+    setUploadedRx(defaultRx);
+    setSafetyData(evaluateSafetyForMedicines(INITIAL_MEDICINES));
     localStorage.removeItem(STORAGE_KEYS.USER);
     localStorage.removeItem(STORAGE_KEYS.MEDICINES);
     localStorage.removeItem(STORAGE_KEYS.SCHEDULE);
     localStorage.removeItem(STORAGE_KEYS.UPLOADED_RX);
+    localStorage.removeItem(STORAGE_KEYS.EXTRACTED);
   };
 
   const activeReminderDose =
-    schedule.find((d) => d.id === activeReminderDoseId) || schedule[1] || schedule[0];
+    schedule.find((d) => d.id === activeReminderDoseId) || schedule[0];
 
   return (
     <MedicationContext.Provider
@@ -169,13 +243,19 @@ export function MedicationProvider({ children }) {
         updateUser,
         medicines,
         updateMedicine,
+        extractedMedicines,
+        setExtractedMedicines,
+        updateExtractedMedicine,
+        addExtractedMedicine,
+        removeExtractedMedicine,
+        confirmExtractedMedicines,
         schedule,
         markDoseStatus,
         updateReminderTime,
         snoozeDose,
         uploadedRx,
         setUploadedRx,
-        safetyData: SAFETY_CHECK_DATA,
+        safetyData,
         reminderModalOpen,
         activeReminderDose,
         openReminderModal,
